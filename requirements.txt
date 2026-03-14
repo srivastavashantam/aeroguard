@@ -1,0 +1,30 @@
+# Core data libraries
+numpy
+pandas
+
+# Data visualization
+matplotlib
+seaborn
+plotly
+
+# Machine learning
+scikit-learn
+
+# Large scale data processing
+dask
+pyarrow
+
+# Notebook environment for EDA
+jupyter
+
+# Logging and environment management
+loguru
+python-dotenv
+
+# Experiment tracking
+mlflow
+
+#for yaml
+pyyaml
+
+
