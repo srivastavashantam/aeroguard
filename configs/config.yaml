@@ -25,6 +25,15 @@ data:
   flight_data_2days: ./data/2days/flight_data.pkl
   stats_2days: ./data/2days/stats.csv
 
+  min_flight_duration: 1800
+  truncate_timesteps: 4096
+  n_channels: 30
+  train_split: 0.70
+  val_split: 0.20
+  test_split: 0.10
+  batch_size: 500
+  prepared_dataset_dir: ./data/prepared_datasets/dl_dataset
+
   # Flight filtering
   min_flight_duration: 1800
   truncate_timesteps: 4096
