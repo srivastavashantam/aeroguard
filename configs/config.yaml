@@ -15,28 +15,34 @@ paths:
   logs_dir: ./logs                # log files yahan jaayengi
   mlruns_dir: ./mlruns            # MLflow runs yahan store honge
 
+
 data:
-  # Poora raw dataset — 28,935 flights
+  # NGAFID raw dataset paths
   raw_flight_data: ./data/all_flights/one_parq
   flight_header_full: ./data/all_flights/flight_header.csv
 
-  # Benchmark subset — 2 din wali flights, model training ke liye
-  flight_header_2days: ./data/2days/flight_header.csv
-  flight_data_2days: ./data/2days/flight_data.pkl
-  stats_2days: ./data/2days/stats.csv
-
-  min_flight_duration: 1800
-  truncate_timesteps: 4096
-  n_channels: 30
-  train_split: 0.70
-  val_split: 0.20
-  test_split: 0.10
-  batch_size: 500
+  # Prepared dataset output
   prepared_dataset_dir: ./data/prepared_datasets/dl_dataset
 
   # Flight filtering
-  min_flight_duration: 1800
-  truncate_timesteps: 4096
+  min_flight_duration: 1800       # seconds — 30 min se kam drop
+  truncate_timesteps: 4096        # last N seconds per flight
+  n_channels: 31                  # 23 original + 8 novel
+
+  # Train/Val/Test split
+  train_split: 0.70
+  val_split: 0.20
+  test_split: 0.10
+
+  # Batch processing
+  batch_size: 500                 # flights per batch — RAM safe
+
+
+  # Cruise phase filter
+  cruise_ias_min: 70.0            # Kts
+  cruise_alt_min: 1500.0          # Feet
+
+
 
 model:
   # RUL = Remaining Useful Life
