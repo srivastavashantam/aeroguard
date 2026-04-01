@@ -3,40 +3,44 @@
 #
 # Endpoints:
 #   GET  /health          — API health check
-#   POST /predict         — Single flight prediction
 #   GET  /model-info      — Model metadata
+#   POST /predict         — Prediction + Anomaly + XAI
 #
 # Usage:
 #   uvicorn api.main:app --reload --port 8000
 # ============================================================
+# NOTE: Yeh v2 hai original main.py ka — upgrades:
+#   v1: sirf TCN prediction
+#   v2: TCN + Statistical Anomaly Detection + XAI explanation
+# Teen components ek hi /predict endpoint mein integrate hain —
+# caller ko sirf ek API call karni hai, teen layers ka result milta hai
 
-# os: environment variables padhne ke liye (agar kabhi MODEL_PATH env se lena ho)
-# Abhi direct string use ho rahi hai, lekin future-proofing ke liye import rakha hai
+# os: environment variable access ke liye (future config management)
 import os
-# numpy: JSON list → numpy array conversion ke liye /predict endpoint mein
-# flight_data list[list[float]] aata hai — model np.ndarray expect karta hai
+# numpy: list[list[float]] → np.ndarray conversion aur shape validation
 import numpy as np
-# FastAPI: ASGI web framework — async endpoints, automatic OpenAPI docs, request validation sab built-in
+# FastAPI: async web framework — automatic OpenAPI docs, request/response validation
 from fastapi import FastAPI, HTTPException
-# CORSMiddleware: Cross-Origin Resource Sharing — browser se alag port pe React/Streamlit dashboard
-# agar CORS na ho toh browser request block kar dega (security policy)
+# CORSMiddleware: browser se cross-origin requests allow karo (Streamlit dashboard ke liye)
 from fastapi.middleware.cors import CORSMiddleware
-# BaseModel: Pydantic ka base class — automatic JSON parsing, type validation, aur serialization
-# Field: schema mein extra metadata add karna (description, constraints) OpenAPI docs ke liye
+# BaseModel: Pydantic — JSON parsing + type validation + serialization
+# Field: schema metadata (description, defaults) — /docs pe dikhta hai
 from pydantic import BaseModel, Field
-# Optional: type hint — field present bhi ho sakta hai, None bhi — flight_id required nahi hai
+# Optional: field present bhi ho sakta hai ya None — flight_id required nahi hai
 from typing import Optional
-# Custom structured logger — loguru based, har log mein timestamp + level + context
+# Custom logger — structured logs with context
 from src.logger import logger
-# Model loading aur inference functions — tcn_model.py se
+# TCN model loading aur single flight inference
 from src.models.tcn_model import load_tcn_model, predict_single_flight
-# Custom exception class — TCN inference errors ko wrap karta hai context ke saath
+# Layer 1a: per-sensor per-phase statistical anomaly detector
+from src.anomaly.statistical import StatisticalAnomalyDetector
+# XAI engine: Gradient × Input importance + plain language explanation
+from src.xai.explainer import AeroGuardExplainer
+# Custom exception class
 from src.exception import ModelPredictionException
 
 # ── App setup ─────────────────────────────────────────────────
-# FastAPI app instantiate karo with metadata
-# title/description/version → /docs pe Swagger UI mein dikhta hai
-# /docs aur /redoc automatically generate hote hain — koi extra setup nahi chahiye
+# FastAPI app instantiate karo — metadata Swagger UI (/docs) pe dikhta hai
 app = FastAPI(
     title       = "AeroGuard API",
     description = "Aircraft Health Monitoring & "
@@ -44,12 +48,9 @@ app = FastAPI(
     version     = "1.0.0",
 )
 
-# CORS — dashboard ke liye
-# allow_origins=["*"]: sabhi domains ko allow karo
-# Production mein yeh ["http://localhost:3000", "https://aeroguard.yourdomain.com"] hona chahiye
-# Development mein wildcard theek hai — faster iteration
-# allow_methods=["*"]: GET, POST, PUT, DELETE, OPTIONS sab allow
-# allow_headers=["*"]: Authorization, Content-Type wagerah sab allow
+# CORS: sabhi origins allow karo — development ke liye
+# Production mein specific domains whitelist karo:
+# allow_origins=["http://localhost:8501", "https://aeroguard.yourdomain.com"]
 app.add_middleware(
     CORSMiddleware,
     allow_origins  = ["*"],
@@ -57,159 +58,186 @@ app.add_middleware(
     allow_headers  = ["*"],
 )
 
-# ── Model load at startup ─────────────────────────────────────
-# Global variables — module level pe rakhe hain taaki saare endpoints access kar sakein
-# None initialize karo — startup_event mein populate honge
-# WHY GLOBAL?
-# FastAPI stateless nahi hai in the sense that ML models are expensive to load.
-# Har request pe model load karna = ~2-5 seconds latency per call — unacceptable.
-# Ek baar startup pe load karo, memory mein rakho, sab requests share karein.
-MODEL      = None   # TCN model instance (torch.nn.Module)
-CONFIG     = None   # production_config.json ka dict (threshold, channels, metrics)
-DEVICE     = "cpu"  # "cuda" agar GPU available ho — inference device
+# ── Globals ───────────────────────────────────────────────────
+# Teeno components module-level globals mein rakhe hain —
+# startup pe ek baar load hote hain, har request pe share hote hain
+#
+# MODEL    : trained TCN (torch.nn.Module) — inference ke liye
+# CONFIG   : production_config.json dict — threshold, channels, metrics
+# DETECTOR : fitted StatisticalAnomalyDetector — JSON se loaded
+# EXPLAINER: AeroGuardExplainer — model ka reference hold karta hai
+# DEVICE   : inference device — "cuda" agar GPU available ho
+#
+# WHY FOUR GLOBALS aur ek dict nahi?
+# Har component independently None-check hota hai —
+# agar DETECTOR load fail ho toh sirf anomaly skip hoga,
+# baaki pipeline kaam karti rahegi (graceful degradation)
+MODEL      = None
+CONFIG     = None
+DETECTOR   = None
+EXPLAINER  = None
+DEVICE     = "cpu"
 
 
 @app.on_event("startup")
 async def startup_event():
     """
-    FastAPI application start hone pe automatically call hota hai.
-    Model aur config ek baar yahan load hote hain — har request pe nahi.
-    Agar model load fail ho toh app start hi nahi hogi (raise karta hai) —
-    better than starting with a broken state silently.
+    FastAPI startup pe automatically call hota hai.
+    Teeno components sequentially load hote hain.
+    Koi bhi fail hua toh app start nahi hogi — fail fast.
     """
-    # global keyword zaroori hai — warna Python local variable samjhega
-    # aur module-level MODEL/CONFIG update nahi honge
-    global MODEL, CONFIG
+    # global keyword: module-level variables update karne ke liye zaroori
+    # warna Python local variables banayega aur globals None rahenge
+    global MODEL, CONFIG, DETECTOR, EXPLAINER
     try:
         logger.info("AeroGuard API starting up...")
-        # load_tcn_model: artifacts se model weights aur config load karta hai
-        # DEVICE="cpu" — production mein "cuda" se swap karo agar GPU ho
+
+        # ── Component 1: TCN Model ────────────────────────────────
+        # artifacts/best_tcn.pt + production_config.json load karo
+        # MODEL.eval() already set hai load_tcn_model ke andar
         MODEL, CONFIG = load_tcn_model(
             model_path  = "artifacts/best_tcn.pt",
             config_path = "artifacts/production_config.json",
             device      = DEVICE
         )
-        logger.info("✅ Model loaded successfully")
+        logger.info("✅ TCN model loaded")
+
+        # ── Component 2: Statistical Anomaly Detector ─────────────
+        # StatisticalAnomalyDetector() sirf object banata hai —
+        # .load() se artifacts/statistical_detector.json se fitted stats restore hote hain
+        # (per-phase per-sensor mean + std jo healthy flights pe compute hua tha)
+        DETECTOR = StatisticalAnomalyDetector()
+        DETECTOR.load("artifacts/statistical_detector.json")
+        logger.info("✅ Anomaly detector loaded")
+
+        # ── Component 3: XAI Explainer ────────────────────────────
+        # AeroGuardExplainer ko fitted MODEL reference chahiye —
+        # isliye MODEL pehle load karna zaroori tha
+        # EXPLAINER apne andar model store karta hai — gradient backward pass ke liye
+        EXPLAINER = AeroGuardExplainer(MODEL, device=DEVICE)
+        logger.info("✅ XAI explainer initialized")
+
+        logger.info("✅ AeroGuard API ready")
+
     except Exception as e:
-        # Error log karo aur re-raise karo — app crash ho jaaye startup pe
-        # WHY CRASH? Agar model load nahi hua aur app chalta rahe,
-        # toh /predict pe 503 ya worse — random errors aayenge.
-        # Fail fast at startup = cleaner production behavior.
-        logger.error(f"Model load failed: {e}")
+        # Koi bhi component fail hua → log karo aur re-raise karo
+        # App crash ho jaaye startup pe — broken state mein silently chalna dangerous hai
+        logger.error(f"Startup failed: {e}")
         raise
 
 
 # ── Schemas ───────────────────────────────────────────────────
-# Pydantic models do kaam karte hain:
-#   1. Request validation — galat shape/type aaye toh 422 Unprocessable Entity auto-return
-#   2. OpenAPI documentation — /docs pe schema automatically dikhta hai
-# Ek baar define karo, FastAPI baaki sab handle karta hai.
+# Pydantic models teen kaam karte hain:
+#   1. JSON → Python object automatic parsing
+#   2. Type validation — galat type aaye toh 422 auto-return
+#   3. /docs pe OpenAPI schema generate hota hai automatically
 
 
 class FlightDataInput(BaseModel):
     """
     Input schema for /predict endpoint.
-
-    flight_data: 2D array of shape (4096, 31)
-                 Normalized sensor readings
-                 Row = timestep, Col = channel
-    flight_id  : Optional flight identifier
+    flight_data : (4096, 31) normalized sensor array
+    flight_id   : Optional Master Index
+    explain     : Whether to include XAI explanation
     """
-    # list[list[float]]: JSON array of arrays — Python type hint se Pydantic validate karega
-    # Field(...): ... matlab required field — default value nahi hai
-    # description: /docs pe dikhta hai — API consumers ke liye helpful
-    # NOTE: Shape validation (4096x31) yahan nahi hoti — Pydantic sirf type check karta hai
-    # Actual shape validation /predict endpoint mein manually ki gayi hai
+    # list[list[float]]: JSON array of arrays — Pydantic type check karta hai
+    # Shape (4096×31) validation Pydantic nahi karta — endpoint mein manually kiya hai
     flight_data : list[list[float]] = Field(
         ...,
         description="(4096, 31) normalized sensor array"
     )
-    # Optional[int]: flight_id present hona zaroori nahi — None allowed hai
-    # Master Index = NGAFID dataset ka unique flight identifier
-    # Logging aur traceability ke liye useful — response mein bhi echo hota hai
+    # Optional flight identifier — NGAFID Master Index
+    # Response mein echo hota hai taaki caller track kar sake
     flight_id   : Optional[int] = Field(
         None,
         description="Master Index of the flight"
     )
+    # explain=True default: XAI by default on hai
+    # Heavy flights ke liye caller explain=False pass kar sakta hai
+    # (XAI mein backward pass hota hai — thoda slower)
+    explain     : bool = Field(
+        True,
+        description="Include XAI explanation in response"
+    )
+
+
+class AnomalyResult(BaseModel):
+    # Statistical detector ka output — /predict response mein nested
+    anomaly_score   : float       # 0-1: fraction of flagged timesteps
+    flagged_sensors : list[str]   # sensor names jo 3σ se bahar gaye
+    phase_anomalies : dict        # per phase flagged timestep counts
+    top_anomalies   : list[dict]  # top 5 by max z-score
+
+
+class ChannelImportance(BaseModel):
+    # XAI top_channels list ka ek element
+    channel     : str    # 'E1 OilT'
+    description : str    # 'Engine oil temperature'
+    importance  : float  # 0-1 normalized gradient × input score
+
+
+class XAIResult(BaseModel):
+    # XAI explainer ka flattened output — gradient info + plain language combined
+    top_channels        : list[ChannelImportance]  # top 5 sensors by importance
+    summary             : str                       # one-line alert summary
+    driving_factors     : list[str]                 # top 3 sensors ka English explanation
+    sensor_insights     : list[str]                 # group-based actionable insights
+    recommended_action  : str                       # severity-specific action
 
 
 class PredictionResponse(BaseModel):
-    """
-    Output schema for /predict endpoint.
-    """
-    # flight_id wapas echo karo — caller ko pata chale kaunsi flight ka result hai
-    # Especially useful agar future mein batch processing implement ho
+    # /predict ka complete response — teeno layers ka combined output
     flight_id   : Optional[int]
-    # 0.0 to 1.0 — sigmoid output, rounded to 4 decimal places
-    probability : float
-    # 0 = safe (airworthy), 1 = at-risk (maintenance needed)
-    prediction  : int
-    # "NORMAL" | "MEDIUM" | "HIGH" | "CRITICAL" — human-readable bucketing
-    severity    : str
-    # Jo threshold use hua classification ke liye — transparency ke liye include kiya
-    threshold   : float
-    # Human-readable action message — severity se map hota hai
-    message     : str
+    probability : float           # TCN sigmoid output (0-1)
+    prediction  : int             # 0=safe, 1=at-risk
+    severity    : str             # NORMAL/MEDIUM/HIGH/CRITICAL
+    threshold   : float           # classification boundary (from config)
+    message     : str             # human readable severity message
+    # Optional fields: agar respective component unavailable tha ya fail hua toh None
+    anomaly     : Optional[AnomalyResult]   # Layer 1a statistical results
+    explanation : Optional[XAIResult]       # XAI gradient + language output
 
 
 class HealthResponse(BaseModel):
-    # "ok" ya "degraded" — load balancer health checks ke liye
-    status      : str
-    # True agar MODEL global None nahi hai — startup successful tha ya nahi
-    model_loaded: bool
-    # Semantic version string — API versioning track karne ke liye
-    version     : str
+    status          : str   # "ok"
+    model_loaded    : bool  # MODEL is not None
+    detector_loaded : bool  # DETECTOR is not None — v2 mein add hua
+    version         : str
 
 
 class ModelInfoResponse(BaseModel):
-    # "TCN" — model architecture name
     model_name  : str
-    # 31 — input sensor channels count
     n_channels  : int
-    # 4096 — input timesteps count
     n_timesteps : int
-    # Classification boundary — tune kiya gaya hai class imbalance ke liye
     threshold   : float
-    # Area Under ROC Curve — overall discrimination ability
     test_auc    : float
-    # F1 Score — precision aur recall ka harmonic mean
     test_f1     : float
-    # Recall at threshold=0.35 — at-risk flights kitne pakde (safety-critical metric)
-    # Aviation mein false negatives bahut costly hain — recall priority pe hai
-    test_recall : float
+    test_recall : float  # test_recall_0_35 — threshold=0.35 pe computed
 
 
 # ── Endpoints ─────────────────────────────────────────────────
-# FastAPI mein har endpoint ek async function hai.
-# async: uvicorn event loop pe run hota hai — I/O operations block nahi karta
-# response_model: return dict ko is schema mein validate + serialize karta hai automatically
-
 
 @app.get("/health", response_model=HealthResponse)
 async def health_check():
     """API health check."""
-    # Simple health check — koi computation nahi, sirf status return karo
-    # Kubernetes/Docker health probes yahi endpoint hit karte hain typically
-    # model_loaded: MODEL None hai ya nahi — startup fail hua tha toh False hoga
+    # v2 mein detector_loaded bhi add kiya — monitoring systems ko pata chale
+    # sirf MODEL nahi, DETECTOR bhi ready hai ya nahi
     return HealthResponse(
-        status       = "ok",
-        model_loaded = MODEL is not None,
-        version      = "1.0.0"
+        status          = "ok",
+        model_loaded    = MODEL is not None,
+        detector_loaded = DETECTOR is not None,
+        version         = "1.0.0"
     )
 
 
 @app.get("/model-info", response_model=ModelInfoResponse)
 async def model_info():
     """Model metadata aur performance metrics."""
-    # CONFIG None check — agar startup fail hua toh CONFIG bhi None hoga
-    # 503 Service Unavailable: server up hai lekin model ready nahi — caller retry kar sakta hai
     if CONFIG is None:
         raise HTTPException(
             status_code=503,
             detail="Model not loaded"
         )
-    # CONFIG dict se fields extract karo — keys production_config.json se match karne chahiye
-    # test_recall_0_35: threshold=0.35 pe computed recall — Colab evaluation notebook mein yahi tha
     return ModelInfoResponse(
         model_name  = CONFIG['model_name'],
         n_channels  = CONFIG['n_channels'],
@@ -217,6 +245,8 @@ async def model_info():
         threshold   = CONFIG['threshold'],
         test_auc    = CONFIG['test_auc'],
         test_f1     = CONFIG['test_f1'],
+        # test_recall_0_35: threshold=0.35 pe evaluated recall
+        # Aviation safety ke liye recall priority pe hai — false negatives costly
         test_recall = CONFIG['test_recall_0_35'],
     )
 
@@ -224,13 +254,13 @@ async def model_info():
 @app.post("/predict", response_model=PredictionResponse)
 async def predict(input_data: FlightDataInput):
     """
-    Ek flight ke liye maintenance prediction.
+    Ek flight ke liye complete analysis.
 
-    Input  : (4096, 31) normalized sensor array
-    Output : probability, severity, prediction
+    Returns:
+      - TCN maintenance probability + severity
+      - Statistical anomaly detection results
+      - XAI explanation (optional, default=True)
     """
-    # Guard clause: MODEL None hai toh predict karna impossible
-    # 503: model temporarily unavailable — client ko retry karne ka signal
     if MODEL is None:
         raise HTTPException(
             status_code=503,
@@ -238,19 +268,16 @@ async def predict(input_data: FlightDataInput):
         )
 
     try:
-        # ── STEP 1: List → numpy array ───────────────────────────────
-        # Pydantic ne list[list[float]] validate kar diya — ab numpy mein convert karo
-        # dtype=np.float32: model weights float32 mein hain — match karo
-        # float64 doge toh torch.tensor conversion pe implicit cast hoga — better explicit karo
+        # ── Step 1: Input convert ─────────────────────────────────
+        # Pydantic ne list[list[float]] validate kiya — numpy mein convert karo
+        # float32: model weights ke saath consistent dtype
         flight_array = np.array(
             input_data.flight_data,
             dtype=np.float32
         )
 
-        # ── STEP 2: Shape validation ─────────────────────────────────
         # Pydantic nested list ka shape validate nahi karta — manually karo
-        # (4096, 31) expected: 4096 timesteps, 31 channels
-        # Galat shape aaye toh 422 Unprocessable Entity — client side bug hai yeh
+        # 422 Unprocessable Entity: client side data error — retry karo correct shape se
         expected = (
             CONFIG['n_timesteps'],
             CONFIG['n_channels']
@@ -262,21 +289,14 @@ async def predict(input_data: FlightDataInput):
                        f"got {flight_array.shape}"
             )
 
-        # ── STEP 3: Inference ────────────────────────────────────────
-        # predict_single_flight: numpy → tensor → model → probability + severity
-        # Internals: transpose, sigmoid, thresholding — sab encapsulated hai tcn_model.py mein
+        # ── Step 2: TCN Prediction ────────────────────────────────
+        # Layer 2: supervised TCN — maintenance probability nikalo
+        # result dict: {probability, prediction, severity, threshold}
         result = predict_single_flight(
             MODEL, flight_array, CONFIG, DEVICE
         )
 
-        # ── STEP 4: Human readable message ──────────────────────────
-        # Severity → actionable message mapping
-        # Aviation domain ke liye specific language:
-        #   CRITICAL: Ground the aircraft — fly mat karo
-        #   HIGH: Inspect karo pehle — risk hai
-        #   MEDIUM: Monitor karo — watch karo
-        #   NORMAL: Airworthy — sab theek
-        # Dict lookup O(1) hai — if-elif chain se cleaner
+        # Severity → actionable human message mapping
         severity_messages = {
             "CRITICAL": "Ground aircraft immediately — "
                         "critical maintenance required",
@@ -288,17 +308,79 @@ async def predict(input_data: FlightDataInput):
                         "no immediate action required",
         }
 
-        # Structured log — flight ID + probability + severity ek line mein
-        # Downstream log aggregation (ELK, CloudWatch) ke liye parseable format
         logger.info(
             f"Flight {input_data.flight_id} — "
             f"Prob: {result['probability']:.4f} | "
             f"Severity: {result['severity']}"
         )
 
-        # ── STEP 5: Response assemble karo ──────────────────────────
-        # Pydantic PredictionResponse schema validate karega return value ko
-        # Keys result dict se map ho rahi hain + flight_id aur message add ho rahe hain
+        # ── Step 3: Anomaly Detection ─────────────────────────────
+        # Layer 1a: Statistical detector — per-sensor per-phase z-score
+        # anomaly_result: Pydantic model → response mein jaayega
+        # anomaly_dict  : raw dict → XAI ko pass kiya jaayega (plain language context ke liye)
+        anomaly_result = None
+        anomaly_dict   = None
+
+        if DETECTOR is not None:
+            try:
+                anomaly_dict   = DETECTOR.detect(flight_array)
+                # Raw dict → Pydantic model — response serialization ke liye
+                anomaly_result = AnomalyResult(
+                    anomaly_score   = anomaly_dict['anomaly_score'],
+                    flagged_sensors = anomaly_dict['flagged_sensors'],
+                    phase_anomalies = anomaly_dict['phase_anomalies'],
+                    top_anomalies   = anomaly_dict['top_anomalies'],
+                )
+                logger.info(
+                    f"Anomaly score: "
+                    f"{anomaly_dict['anomaly_score']:.4f}"
+                )
+            except Exception as e:
+                # GRACEFUL DEGRADATION: anomaly detection fail hua toh sirf log karo
+                # HTTPException raise mat karo — TCN prediction still valid hai
+                # anomaly_result = None rahega → response mein anomaly field None hoga
+                logger.warning(f"Anomaly detection failed: {e}")
+
+        # ── Step 4: XAI Explanation ───────────────────────────────
+        # explain flag: caller control karta hai XAI on/off
+        # Agar EXPLAINER None hai (startup fail tha) toh gracefully skip karo
+        xai_result = None
+
+        if input_data.explain and EXPLAINER is not None:
+            try:
+                # EXPLAINER.explain(): gradient backward pass + plain language generation
+                # anomaly_dict pass karo: statistical context plain language mein include hoga
+                explanation = EXPLAINER.explain(
+                    flight_array, result, anomaly_dict
+                )
+                plain = explanation['plain_language']
+                grad  = explanation['gradient_importance']
+
+                # grad['top_channels']: list of dicts → list of ChannelImportance Pydantic models
+                # **ch: dict unpacking — keys match karne chahiye ChannelImportance fields se
+                xai_result = XAIResult(
+                    top_channels = [
+                        ChannelImportance(**ch)
+                        for ch in grad['top_channels']
+                    ],
+                    summary            = plain['summary'],
+                    driving_factors    = plain['driving_factors'],
+                    sensor_insights    = plain['sensor_insights'],
+                    recommended_action = plain['recommended_action'],
+                )
+                logger.info(
+                    f"XAI top channel: "
+                    f"{grad['top_channels'][0]['channel']}"
+                )
+            except Exception as e:
+                # GRACEFUL DEGRADATION: XAI fail hua toh warning log karo
+                # Core prediction already done hai — XAI optional enrichment hai
+                # xai_result = None → response mein explanation field None hoga
+                logger.warning(f"XAI failed: {e}")
+
+        # ── Step 5: Response assemble karo ───────────────────────
+        # Teeno layers ka combined response — koi bhi None ho sakta hai
+        # Pydantic Optional fields automatically None serialize karta hai
         return PredictionResponse(
             flight_id   = input_data.flight_id,
             probability = result['probability'],
@@ -306,18 +388,16 @@ async def predict(input_data: FlightDataInput):
             severity    = result['severity'],
             threshold   = result['threshold'],
             message     = severity_messages[result['severity']],
+            anomaly     = anomaly_result,    # None agar DETECTOR unavailable/failed
+            explanation = xai_result,        # None agar explain=False ya EXPLAINER failed
         )
 
     except HTTPException:
-        # HTTPException ko re-raise karo bina wrap kiye
-        # WHY? Neeche wala broad `except Exception` HTTPException ko bhi catch kar lega
-        # aur 422 ko 500 mein convert kar dega — galat status code jaayega client ko
+        # HTTPException re-raise karo bina wrap kiye —
+        # 422 (shape mismatch) ko 500 mein convert hone se bachao
         raise
     except Exception as e:
-        # Koi bhi unexpected error (ModelPredictionException, numpy error, etc.)
-        # 500 Internal Server Error mein convert karo
-        # str(e) detail mein daalo — debugging ke liye helpful
-        # NOTE: Production mein sensitive internal details str(e) mein expose mat karo
+        # Unexpected errors → 500 Internal Server Error
         logger.error(f"Prediction failed: {e}")
         raise HTTPException(
             status_code=500,
