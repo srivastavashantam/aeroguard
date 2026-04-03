@@ -162,11 +162,12 @@ class FlightDataInput(BaseModel):
 
 
 class AnomalyResult(BaseModel):
-    # Statistical detector ka output — /predict response mein nested
-    anomaly_score   : float       # 0-1: fraction of flagged timesteps
-    flagged_sensors : list[str]   # sensor names jo 3σ se bahar gaye
-    phase_anomalies : dict        # per phase flagged timestep counts
-    top_anomalies   : list[dict]  # top 5 by max z-score
+    anomaly_score    : float     # 0-1: fraction of flagged timesteps
+    flagged_sensors  : list[str]  # sensor names jo 3σ se bahar gaye
+    phase_anomalies  : dict      # per phase flagged timestep counts
+    top_anomalies    : list[dict]  # top 5 anomalies by max z-score — each dict: {sensor, phase, z_score, timeline}
+    anomaly_timeline : list[int]   # 4096-length list — 1 for anomalous timestep, 0 for normal
+
 
 
 class ChannelImportance(BaseModel):
@@ -326,11 +327,14 @@ async def predict(input_data: FlightDataInput):
                 anomaly_dict   = DETECTOR.detect(flight_array)
                 # Raw dict → Pydantic model — response serialization ke liye
                 anomaly_result = AnomalyResult(
-                    anomaly_score   = anomaly_dict['anomaly_score'],
-                    flagged_sensors = anomaly_dict['flagged_sensors'],
-                    phase_anomalies = anomaly_dict['phase_anomalies'],
-                    top_anomalies   = anomaly_dict['top_anomalies'],
+                    anomaly_score    = anomaly_dict['anomaly_score'],
+                    flagged_sensors  = anomaly_dict['flagged_sensors'],
+                    phase_anomalies  = anomaly_dict['phase_anomalies'],
+                    top_anomalies    = anomaly_dict['top_anomalies'],
+                    anomaly_timeline = anomaly_dict['anomaly_timeline'],
+                
                 )
+                
                 logger.info(
                     f"Anomaly score: "
                     f"{anomaly_dict['anomaly_score']:.4f}"
