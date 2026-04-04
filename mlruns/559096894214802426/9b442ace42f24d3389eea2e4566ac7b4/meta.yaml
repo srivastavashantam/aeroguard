@@ -1,0 +1,14 @@
+artifact_uri: file:C:/Users/preet/Downloads/Resume_Project_shantam/Aeroguard/mlruns/559096894214802426/9b442ace42f24d3389eea2e4566ac7b4/artifacts
+end_time: 1775275895887
+entry_point_name: ''
+experiment_id: '559096894214802426'
+lifecycle_stage: active
+run_id: 9b442ace42f24d3389eea2e4566ac7b4
+run_name: baseline_retrain_v1_20260404_094126
+source_name: ''
+source_type: 4
+source_version: ''
+start_time: 1775275887946
+status: 3
+tags: []
+user_id: preet

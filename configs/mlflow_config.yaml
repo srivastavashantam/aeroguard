@@ -1,0 +1,71 @@
+# ============================================================
+# AeroGuard — MLflow Configuration
+#
+# MLflow tracking server settings
+# Saare experiment tracking related configs yahan hain
+# ============================================================
+
+mlflow:
+  # Tracking server — local file system
+  # Production mein yeh remote server hoga
+  # e.g. http://mlflow-server:5000
+  tracking_uri: ./mlruns
+
+  # Experiment name — MLflow UI mein yahi naam dikhega
+  experiment_name: AeroGuard_TCN
+
+  # Model registry name
+  # MLflow Model Registry mein register hoga
+  registered_model_name: AeroGuard_TCN
+
+# ============================================================
+# Retraining hyperparameters
+# Yahan se control karo — code touch karne ki zarurat nahi
+# ============================================================
+
+training:
+  # Run identification
+  run_name: baseline_retrain_v1
+
+  # Training params
+  n_epochs   : 30
+  batch_size : 32
+  lr         : 0.0003        # 3e-4
+  weight_decay: 0.0001       # 1e-4
+  patience   : 7             # early stopping
+
+  # Model architecture
+  n_channels : 31
+  n_timesteps: 4096
+  n_filters  : 64
+  kernel_size: 3
+  n_layers   : 8
+  dropout    : 0.1
+
+  # Classification threshold
+  threshold  : 0.35
+
+# ============================================================
+# What gets logged to MLflow
+# ============================================================
+
+logging:
+  # Hyperparameters
+  log_params: true
+
+  # Per-epoch metrics
+  log_metrics: true
+
+  # Model artifacts
+  log_model: true
+
+  # Config files
+  log_artifacts: true
+
+  # Artifacts to log
+  artifacts:
+    - artifacts/retrained_tcn.pt
+    - artifacts/production_config.json
+    - artifacts/statistical_detector.json
+    - configs/config.yaml
+    - configs/mlflow_config.yaml

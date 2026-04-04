@@ -1,0 +1,10 @@
+artifact_location: file:C:/Users/preet/Downloads/Resume_Project_shantam/Aeroguard/mlruns/559096894214802426/models/m-91c77c11d8fe4503b15aa382f511ef57/artifacts
+creation_timestamp: 1775275439996
+experiment_id: '559096894214802426'
+last_updated_timestamp: 1775275451099
+model_id: m-91c77c11d8fe4503b15aa382f511ef57
+model_type: null
+name: tcn_model
+source_run_id: e3f764014bd64a8897506506a3ecda3d
+status: 2
+status_message: null

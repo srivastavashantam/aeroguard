@@ -1,0 +1,16 @@
+creation_timestamp: 1775275071975
+current_stage: None
+deployment_job_state: null
+description: null
+last_updated_timestamp: 1775275071975
+model_id: m-e5bed622eeb24c558478d1f503f07291
+name: AeroGuard_TCN
+run_id: fd6c656216fa4ce2b7ff8918500e74cb
+run_link: null
+source: models:/m-e5bed622eeb24c558478d1f503f07291
+status: READY
+status_message: null
+storage_location: file:C:/Users/preet/Downloads/Resume_Project_shantam/Aeroguard/mlruns/559096894214802426/models/m-e5bed622eeb24c558478d1f503f07291/artifacts
+user_id: null
+version: 1
+workspace: default
