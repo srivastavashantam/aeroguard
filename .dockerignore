@@ -1,0 +1,41 @@
+# Large data files — mount karenge volumes se
+data/
+mlruns/
+mlruns.db
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+*.egg-info/
+
+# Virtual environment
+aviation/
+venv/
+env/
+
+# Artifacts — mount karenge
+artifacts/
+
+# Notebooks
+notebooks/
+*.ipynb
+
+# Git
+.git/
+.gitignore
+
+# Logs
+logs/
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Test files
+test_*.py

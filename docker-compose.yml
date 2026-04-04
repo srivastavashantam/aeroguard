@@ -1,0 +1,61 @@
+# ============================================================
+# AeroGuard — Docker Compose
+#
+# Services:
+#   api      : FastAPI backend  → localhost:8000
+#   dashboard: Streamlit UI     → localhost:8501
+#
+# Run:
+#   docker-compose up --build
+#
+# Stop:
+#   docker-compose down
+# ============================================================
+
+
+services:
+
+  # ── FastAPI Backend ───────────────────────────────────────
+  api:
+    build: .
+    container_name: aeroguard_api
+    command: uvicorn api.main:app --host 0.0.0.0 --port 8000
+    ports:
+      - "8000:8000"
+    volumes:
+      # Artifacts mount karo — model files
+      - ./artifacts:/app/artifacts
+      # Configs mount karo
+      - ./configs:/app/configs
+    environment:
+      - PYTHONUNBUFFERED=1
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # ── Streamlit Dashboard ───────────────────────────────────
+  dashboard:
+    build: .
+    container_name: aeroguard_dashboard
+    command: streamlit run dashboard/app.py
+      --server.port 8501
+      --server.address 0.0.0.0
+      --server.headless true
+    ports:
+      - "8501:8501"
+    volumes:
+      - ./artifacts:/app/artifacts
+      - ./configs:/app/configs
+      # Dataset mount karo — fleet view ke liye
+      - ./data/prepared_datasets:/app/data/prepared_datasets
+    environment:
+      - PYTHONUNBUFFERED=1
+      - API_URL=http://api:8000
+    depends_on:
+      - api
+    restart: unless-stopped
+   
+      

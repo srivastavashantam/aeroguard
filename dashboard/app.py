@@ -24,7 +24,8 @@ st.set_page_config(
 )
 
 # ── Constants ─────────────────────────────────────────────────
-API_URL = "http://127.0.0.1:8000"
+import os
+API_URL = os.getenv("API_URL", "http://127.0.0.1:8000")
 
 CHANNEL_NAMES = [
     'volt1', 'volt2', 'amp1', 'amp2',
