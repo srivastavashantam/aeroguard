@@ -15,8 +15,7 @@ aviation/
 venv/
 env/
 
-# Artifacts — mount karenge
-artifacts/
+
 
 # Notebooks
 notebooks/
