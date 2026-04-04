@@ -1,0 +1,72 @@
+# ============================================================
+# AeroGuard — CI/CD Pipeline (GitHub Actions)
+#
+# Trigger: Har git push ya pull request pe main branch pe
+#
+# Steps:
+#   1. Code checkout
+#   2. Python setup
+#   3. Dependencies install
+#   4. Code quality check (flake8)
+#   5. Import test (basic sanity)
+#   6. Docker build test
+# ============================================================
+
+name: AeroGuard CI
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+
+    steps:
+      # ── Step 1: Code checkout ───────────────────────────
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      # ── Step 2: Python setup ────────────────────────────
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      # ── Step 3: Install dependencies ────────────────────
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      # ── Step 4: Code quality check ──────────────────────
+      # flake8 — PEP8 style check
+      # E501 ignore — long lines (comments mein hain)
+      # W503 ignore — line break before binary operator
+      - name: Lint with flake8
+        run: |
+          pip install flake8
+          flake8 src/ api/ dashboard/ \
+            --max-line-length=100 \
+            --ignore=E501,W503,E302,W291 \
+            --exclude=__pycache__
+
+      # ── Step 5: Import test ─────────────────────────────
+      # Basic sanity — modules import ho rahe hain
+      - name: Test imports
+        run: |
+          python -c "from src.logger import logger; print('✅ logger ok')"
+          python -c "from src.exception import AeroGuardException; print('✅ exception ok')"
+          python -c "from src.models.tcn_model import TCN; print('✅ TCN ok')"
+          python -c "from src.anomaly.statistical import StatisticalAnomalyDetector; print('✅ anomaly ok')"
+          python -c "from src.xai.explainer import AeroGuardExplainer; print('✅ xai ok')"
+
+      # ── Step 6: Docker build test ───────────────────────
+      # Docker image build hoti hai ya nahi check karo
+      - name: Build Docker image
+        run: |
+          docker build -t aeroguard-test .
+          echo "✅ Docker build successful"
